@@ -163,6 +163,7 @@ func (v validator) ValidateCreate(ctx *pkgctx.WebhookRequestContext) admission.R
 	fieldErrs = append(fieldErrs, v.validateImageOnCreate(ctx, vm)...)
 	fieldErrs = append(fieldErrs, v.validateClassOnCreate(ctx, vm)...)
 	fieldErrs = append(fieldErrs, v.validateStorageClass(ctx, vm)...)
+	fieldErrs = append(fieldErrs, v.validateVCenterCompatibility(ctx, vm)...)
 	fieldErrs = append(fieldErrs, v.validateCrypto(ctx, vm)...)
 	fieldErrs = append(fieldErrs, v.validateBootstrap(ctx, vm)...)
 	fieldErrs = append(fieldErrs, v.validateNetwork(ctx, vm, nil)...)
@@ -700,6 +701,104 @@ func (v validator) validateStorageClass(
 
 	if !ok {
 		allErrs = append(allErrs, field.Invalid(scPath, scName, fmt.Sprintf(storageClassNotAssignedFmt, vm.Namespace)))
+	}
+
+	return allErrs
+}
+
+func (v validator) validateVCenterCompatibility(
+	ctx *pkgctx.WebhookRequestContext,
+	vm *vmopv1.VirtualMachine) field.ErrorList {
+
+	var allErrs field.ErrorList
+
+	// Get the vCenter ID assigned to this VM
+	vcenterID := vm.Labels[pkgconst.VCenterIDLabel]
+	if vcenterID == "" {
+		return allErrs
+	}
+
+	// Validate that the image (if specified) belongs to the same vCenter
+	if !vmopv1util.IsImagelessVM(*vm) {
+		allErrs = append(allErrs, v.validateImageVCenterCompatibility(ctx, vm, vcenterID)...)
+	}
+
+	// Validate that the storage class (if specified) belongs to the same vCenter
+	if vm.Spec.StorageClass != "" {
+		allErrs = append(allErrs, v.validateStorageClassVCenterCompatibility(ctx, vm, vcenterID)...)
+	}
+
+	return allErrs
+}
+
+func (v validator) validateImageVCenterCompatibility(
+	ctx *pkgctx.WebhookRequestContext,
+	vm *vmopv1.VirtualMachine,
+	vcenterID string) field.ErrorList {
+
+	var allErrs field.ErrorList
+	imagePath := field.NewPath("spec", "image")
+
+	// Get the image object based on the reference
+	var imageVCenterID string
+	if vm.Spec.Image != nil {
+		switch vm.Spec.Image.Kind {
+		case vmiKind:
+			vmi := &vmopv1.VirtualMachineImage{}
+			if err := v.client.Get(ctx, ctrlclient.ObjectKey{
+				Name:      vm.Spec.Image.Name,
+				Namespace: vm.Namespace,
+			}, vmi); err == nil {
+				imageVCenterID = vmi.Labels[pkgconst.VCenterIDLabel]
+			} else if !apierrors.IsNotFound(err) {
+				return append(allErrs, field.InternalError(imagePath, err))
+			}
+
+		case cvmiKind:
+			cvmi := &vmopv1.ClusterVirtualMachineImage{}
+			if err := v.client.Get(ctx, ctrlclient.ObjectKey{
+				Name: vm.Spec.Image.Name,
+			}, cvmi); err == nil {
+				imageVCenterID = cvmi.Labels[pkgconst.VCenterIDLabel]
+			} else if !apierrors.IsNotFound(err) {
+				return append(allErrs, field.InternalError(imagePath, err))
+			}
+		}
+	}
+
+	// Check compatibility
+	if imageVCenterID != "" && imageVCenterID != vcenterID {
+		allErrs = append(allErrs, field.Invalid(
+			imagePath,
+			vm.Spec.Image.Name,
+			fmt.Sprintf("image belongs to vCenter %s but VM is assigned to vCenter %s", imageVCenterID, vcenterID)))
+	}
+
+	return allErrs
+}
+
+func (v validator) validateStorageClassVCenterCompatibility(
+	ctx *pkgctx.WebhookRequestContext,
+	vm *vmopv1.VirtualMachine,
+	vcenterID string) field.ErrorList {
+
+	var allErrs field.ErrorList
+	scPath := field.NewPath("spec", "storageClass")
+
+	sc := &storagev1.StorageClass{}
+	if err := v.client.Get(ctx, ctrlclient.ObjectKey{Name: vm.Spec.StorageClass}, sc); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return append(allErrs, field.InternalError(scPath, err))
+		}
+		return allErrs
+	}
+
+	scVCenterID := sc.Labels[pkgconst.VCenterIDLabel]
+	if scVCenterID != "" && scVCenterID != vcenterID {
+		allErrs = append(allErrs, field.Invalid(
+			scPath,
+			vm.Spec.StorageClass,
+			fmt.Sprintf("storage class belongs to vCenter %s but VM is assigned to vCenter %s", scVCenterID, vcenterID)))
 	}
 
 	return allErrs

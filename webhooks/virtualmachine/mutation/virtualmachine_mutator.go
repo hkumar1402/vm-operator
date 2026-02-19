@@ -116,6 +116,10 @@ var (
 
 func init() {
 	MutateOnCreateFuncs.Store(
+		"create.vmoperator.vmware.com/assign-vcenter",
+		(MutateOnCreateFn)(AssignVCenter))
+
+	MutateOnCreateFuncs.Store(
 		"create.vmoperator.vmware.com/set-created-at-annotations",
 		(MutateOnCreateFn)(SetCreatedAtAnnotations))
 
@@ -790,6 +794,94 @@ func SetDefaultControllers(
 	}
 
 	return false, nil
+}
+
+// AssignVCenter assigns a vCenter instance UUID to a VM in multi-vCenter deployments.
+// This function is called by the mutation webhook in the global container before any
+// controller processes the VM. The assigned vCenter ID is used by per-vCenter containers
+// to filter and process only VMs belonging to their vCenter.
+//
+// Assignment logic:
+//   - Skips if VM already has vcenter-id label (allows manual override)
+//   - Reads available vCenters from ConfigMap: vmoperator-vcenter-list
+//   - Randomly selects a vCenter from the available list
+//   - Adds label: vmoperator.vmware.com/vcenter-id=<vcenter-uuid>
+//
+// The ConfigMap format:
+//
+//	apiVersion: v1
+//	kind: ConfigMap
+//	metadata:
+//	  name: vmoperator-vcenter-list
+//	  namespace: vmoperator-system
+//	data:
+//	  vcenters: "uuid1,uuid2,uuid3"
+func AssignVCenter(
+	ctx *pkgctx.WebhookRequestContext,
+	client ctrlclient.Client,
+	vm *vmopv1.VirtualMachine) (bool, error) {
+
+	// Skip if already assigned (allows manual override or pre-assignment)
+	if vm.Labels != nil && vm.Labels[constants.VCenterIDLabel] != "" {
+		return false, nil
+	}
+
+	// Get available vCenters from ConfigMap
+	vcenters, err := getAvailableVCenters(ctx, client)
+	if err != nil {
+		return false, fmt.Errorf("failed to get available vCenters: %w", err)
+	}
+
+	if len(vcenters) == 0 {
+		return false, errors.New("no vCenters configured in vmoperator-vcenter-list ConfigMap")
+	}
+
+	// Random selection (simple round-robin could be added later)
+	// Using UUID generation for randomness to avoid importing math/rand
+	selectedIdx := int(uuid.New().ID()) % len(vcenters)
+	selected := vcenters[selectedIdx]
+
+	// Add label
+	if vm.Labels == nil {
+		vm.Labels = make(map[string]string)
+	}
+	vm.Labels[constants.VCenterIDLabel] = selected
+
+	return true, nil
+}
+
+// getAvailableVCenters retrieves the list of available vCenter instance UUIDs
+// from the vmoperator-vcenter-list ConfigMap.
+func getAvailableVCenters(
+	ctx *pkgctx.WebhookRequestContext,
+	client ctrlclient.Client) ([]string, error) {
+
+	configMap := &corev1.ConfigMap{}
+	configMapKey := ctrlclient.ObjectKey{
+		Name:      "vmoperator-vcenter-list",
+		Namespace: pkgcfg.FromContext(ctx).PodNamespace,
+	}
+
+	if err := client.Get(ctx, configMapKey, configMap); err != nil {
+		return nil, fmt.Errorf("failed to get ConfigMap %s: %w", configMapKey, err)
+	}
+
+	vcentersStr, ok := configMap.Data["vcenters"]
+	if !ok || vcentersStr == "" {
+		return nil, errors.New("ConfigMap vmoperator-vcenter-list missing 'vcenters' key or value is empty")
+	}
+
+	// Parse comma-separated list
+	vcenters := strings.Split(vcentersStr, ",")
+	result := make([]string, 0, len(vcenters))
+	for _, vc := range vcenters {
+		vc = strings.TrimSpace(vc)
+		if vc != "" {
+			result = append(result, vc)
+		}
+	}
+
+	return result, nil
 }
 
 // SetLastResizeAnnotations sets the last resize annotation as needed when the class name changes.
