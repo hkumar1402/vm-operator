@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,7 +39,9 @@ import (
 	vspherepolv1 "github.com/vmware-tanzu/vm-operator/external/vsphere-policy/api/v1alpha1"
 
 	vmopapi "github.com/vmware-tanzu/vm-operator/api"
+	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha5"
 	pkgcfg "github.com/vmware-tanzu/vm-operator/pkg/config"
+	"github.com/vmware-tanzu/vm-operator/pkg/constants"
 	pkgctx "github.com/vmware-tanzu/vm-operator/pkg/context"
 	"github.com/vmware-tanzu/vm-operator/pkg/record"
 )
@@ -90,14 +93,25 @@ func New(ctx context.Context, opts Options) (Manager, error) {
 		_ = vpcv1alpha1.AddToScheme(opts.Scheme)
 	}
 
+	// Build cache options with label-based filtering for per-vCenter containers
+	cacheOpts := cache.Options{
+		DefaultNamespaces: GetNamespaceCacheConfigs(opts.WatchNamespace),
+		DefaultTransform:  cache.TransformStripManagedFields(),
+		SyncPeriod:        &opts.SyncPeriod,
+	}
+
+	// Per-vCenter containers: Filter cached resources by vCenter label
+	// This reduces memory usage by only caching resources this container will reconcile.
+	// Assumes external migration workflow has labeled all existing resources.
+	// Global resources (Zone, VirtualMachineClass, etc.) are not filtered.
+	if config := pkgcfg.FromContext(ctx); config.IsPerVCenterMode() {
+		cacheOpts.ByObject = getPerVCenterCacheConfig(config.VCenterInstanceUUID)
+	}
+
 	// Build the controller manager.
 	mgr, err := ctrlmgr.New(opts.KubeConfig, ctrlmgr.Options{
 		Scheme: opts.Scheme,
-		Cache: cache.Options{
-			DefaultNamespaces: GetNamespaceCacheConfigs(opts.WatchNamespace),
-			DefaultTransform:  cache.TransformStripManagedFields(),
-			SyncPeriod:        &opts.SyncPeriod,
-		},
+		Cache:  cacheOpts,
 		Client: client.Options{
 			Cache: &client.CacheOptions{
 				DisableFor: []client.Object{
@@ -182,4 +196,53 @@ type manager struct {
 
 func (m *manager) GetContext() *pkgctx.ControllerManagerContext {
 	return m.ctx
+}
+
+// getPerVCenterCacheConfig returns cache configuration for per-vCenter containers.
+// It filters per-vCenter resources by label to reduce memory usage.
+// Global resources (Zone, VirtualMachineClass, etc.) are NOT filtered - they must
+// be cached by all containers.
+func getPerVCenterCacheConfig(vcenterUUID string) map[client.Object]cache.ByObject {
+	// Create label selector for this vCenter's resources
+	labelSelector := labels.SelectorFromSet(labels.Set{
+		constants.VCenterIDLabel: vcenterUUID,
+	})
+
+	return map[client.Object]cache.ByObject{
+		// Per-vCenter resources: Only cache resources with matching vCenter label
+		// These resources are labeled by mutation webhooks during creation
+
+		// VirtualMachine: Labeled by mutation webhook (random assignment)
+		&vmopv1.VirtualMachine{}: {
+			Label: labelSelector,
+		},
+		// VirtualMachineSnapshot: Labeled by mutation webhook (copied from parent VM)
+		&vmopv1.VirtualMachineSnapshot{}: {
+			Label: labelSelector,
+		},
+		// VirtualMachineWebConsoleRequest: Labeled by mutation webhook (copied from referenced VM)
+		&vmopv1.VirtualMachineWebConsoleRequest{}: {
+			Label: labelSelector,
+		},
+		// VirtualMachinePublishRequest: Labeled by mutation webhook (copied from source VM)
+		&vmopv1.VirtualMachinePublishRequest{}: {
+			Label: labelSelector,
+		},
+		// ContentLibraryItem: Labeled by image-registry-operator with vCenter UUID
+		&imgregv1a1.ContentLibraryItem{}: {
+			Label: labelSelector,
+		},
+		&imgregv1.ContentLibraryItem{}: {
+			Label: labelSelector,
+		},
+
+		// Note: The following resources are NOT filtered and will be cached by all containers:
+		// - Zone: Global resource (no label, uses MoID filtering in controller)
+		// - AvailabilityZone: Global resource (no label, uses MoID filtering in controller)
+		// - VirtualMachineClass: Shared resource (no label, used across all vCenters)
+		// - VirtualMachineImage: Shared resource (no label when from shared content library)
+		// - ClusterVirtualMachineImage: Shared resource (no label when from shared content library)
+		// - EncryptionClass: Global resource (no label)
+		// - StorageClass: Per-vCenter but managed externally (labeled by CSI driver)
+	}
 }

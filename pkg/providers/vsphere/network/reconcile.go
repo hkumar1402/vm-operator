@@ -37,6 +37,33 @@ func ReconcileNetworkInterfaces(
 			results.Results[idx].DeviceKey = matchDev.Key
 			results.Results[idx].MacAddress = matchDev.MacAddress
 			r.Device.(vimtypes.BaseVirtualEthernetCard).GetVirtualEthernetCard().MacAddress = matchDev.MacAddress
+
+			// Check if we need to update opaque backing to DVPG backing.
+			// This happens when VM was created without cluster placement (opaque backing with
+			// NetworkInterface CR UID) and now we have the actual DVPG backing available.
+			needsBackingUpdate := false
+			if opaque, ok := matchDev.Backing.(*vimtypes.VirtualEthernetCardOpaqueNetworkBackingInfo); ok {
+				if _, isDVPG := r.Device.GetVirtualDevice().Backing.(*vimtypes.VirtualEthernetCardDistributedVirtualPortBackingInfo); isDVPG {
+					// Current device has opaque backing, but result has DVPG backing.
+					// This means cluster placement is now known and we should update.
+					needsBackingUpdate = true
+					matchDev.Backing = r.Device.GetVirtualDevice().Backing
+				} else if opaqueResult, isOpaqueResult := r.Device.GetVirtualDevice().Backing.(*vimtypes.VirtualEthernetCardOpaqueNetworkBackingInfo); isOpaqueResult {
+					// Both are opaque, but check if IDs match (no update needed if they match).
+					if opaque.OpaqueNetworkId != opaqueResult.OpaqueNetworkId {
+						needsBackingUpdate = true
+						matchDev.Backing = r.Device.GetVirtualDevice().Backing
+					}
+				}
+			}
+
+			if needsBackingUpdate {
+				deviceChanges = append(deviceChanges, &vimtypes.VirtualDeviceConfigSpec{
+					Device:    currentEthCards[matchingIdx],
+					Operation: vimtypes.VirtualDeviceConfigSpecOperationEdit,
+				})
+			}
+
 			currentEthCards = slices.Delete(currentEthCards, matchingIdx, matchingIdx+1)
 		} else {
 			existingIdx := findExistingEthCardForOrphanedCR(ctx, r.Name, results.OrphanedNetworkInterfaces, currentEthCards)

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -144,12 +145,22 @@ func (r *ReconcilerV1A2) Reconcile(
 		obj, spec, status = &o, &o.Spec, &o.Status
 	}
 
-	vmiName, nameErr := GetImageFieldNameFromItem(req.Name)
+	// Wait for the ContentLibraryItem status to be fully populated before creating VMI.
+	// We check for the existence of the Ready condition (regardless of its value) to ensure
+	// that the status fields like SourceID have been populated by image-registry-operator.
+	// For subscribed libraries, SourceID will be present once the condition exists.
+	// For local libraries, SourceID will remain empty but we can proceed with local naming.
+	if !HasV1A2ItemReadyCondition(status.Conditions) {
+		logger.V(4).Info("ContentLibraryItem status not yet populated, requeuing")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	vmiName, nameErr := GetImageFieldNameFromItemWithSourceID(req.Name, status.SourceID)
 	if nameErr != nil {
 		logger.Error(nameErr, "Unsupported library item name, skip reconciling")
 		return ctrl.Result{}, nil
 	}
-	logger = logger.WithValues("vmiName", vmiName)
+	logger = logger.WithValues("vmiName", vmiName, "sourceID", status.SourceID)
 
 	patchHelper, err := patch.NewHelper(obj, r.Client)
 	if err != nil {

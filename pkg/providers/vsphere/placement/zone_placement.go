@@ -23,13 +23,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	topologyv1 "github.com/vmware-tanzu/vm-operator/external/tanzu-topology/api/v1alpha1"
 	pkgcfg "github.com/vmware-tanzu/vm-operator/pkg/config"
 	pkgctx "github.com/vmware-tanzu/vm-operator/pkg/context"
 	pkglog "github.com/vmware-tanzu/vm-operator/pkg/log"
 	"github.com/vmware-tanzu/vm-operator/pkg/providers/vsphere/constants"
 	"github.com/vmware-tanzu/vm-operator/pkg/providers/vsphere/vcenter"
 	"github.com/vmware-tanzu/vm-operator/pkg/topology"
+	"github.com/vmware-tanzu/vm-operator/pkg/topology/vcscoped"
 	vmopv1util "github.com/vmware-tanzu/vm-operator/pkg/util/vmopv1"
 )
 
@@ -131,6 +131,7 @@ func lookupChildRPs(
 }
 
 // getPlacementCandidates determines the candidate resource pools for VM placement.
+// Uses vCenter-scoped wrapper types to automatically filter MoIDs.
 func getPlacementCandidates(
 	ctx context.Context,
 	client ctrlclient.Client,
@@ -143,7 +144,7 @@ func getPlacementCandidates(
 
 	// When FSS_WCP_WORKLOAD_DOMAIN_ISOLATION is enabled, use namespaced Zone CR to get candidate resource pools.
 	if pkgcfg.FromContext(ctx).Features.WorkloadDomainIsolation {
-		var zones []topologyv1.Zone
+		var zones []vcscoped.VCZone
 		if preAssignedZoneName == "" {
 			z, err := topology.GetZones(ctx, client, namespace)
 			if err != nil {
@@ -164,7 +165,8 @@ func getPlacementCandidates(
 				continue
 			}
 
-			rpMoIDs := zone.Spec.ManagedVMs.PoolMoIDs
+			// Use wrapper method to get filtered and parsed pool MoIDs
+			rpMoIDs := zone.GetManagedVMsPools()
 			if len(rpMoIDs) == 0 {
 				pkglog.FromContextOrDefault(ctx).Info(
 					"Skipping candidate zone with no ResourcePool MoIDs", "zone", zone.Name)
@@ -189,7 +191,7 @@ func getPlacementCandidates(
 	}
 
 	// When FSS_WCP_WORKLOAD_DOMAIN_ISOLATION is disabled, use cluster scoped AvailabilityZone CR to get candidate resource pools.
-	var azs []topologyv1.AvailabilityZone
+	var azs []vcscoped.VCAvailabilityZone
 	if preAssignedZoneName == "" {
 		az, err := topology.GetAvailabilityZones(ctx, client)
 		if err != nil {
@@ -209,16 +211,18 @@ func getPlacementCandidates(
 	}
 
 	for _, az := range azs {
-		nsInfo, ok := az.Spec.Namespaces[namespace]
+		// Use wrapper method to get filtered namespace info
+		nsInfo, ok := az.GetNamespaceInfo(namespace)
 		if !ok {
 			continue
 		}
 
-		var rpMoIDs []string
-		if len(nsInfo.PoolMoIDs) != 0 {
-			rpMoIDs = nsInfo.PoolMoIDs
-		} else {
-			rpMoIDs = []string{nsInfo.PoolMoId}
+		// Use wrapper method to get filtered and parsed pool MoIDs
+		rpMoIDs := nsInfo.GetPoolMoIDs()
+		if len(rpMoIDs) == 0 {
+			pkglog.FromContextOrDefault(ctx).Info(
+				"Skipping candidate availability zone with no ResourcePool MoIDs", "az", az.Name)
+			continue
 		}
 
 		if childRPName != "" {

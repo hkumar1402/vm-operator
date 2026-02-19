@@ -35,11 +35,24 @@ import (
 func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) error {
 	config := pkgcfg.FromContext(ctx)
 
-	// Global container: Only register shared controllers
+	// Global container: Register shared and vCenter-agnostic controllers
 	if config.IsGlobalMode() {
+		// Shared resource controllers
 		if err := virtualmachineclass.AddToManager(ctx, mgr); err != nil {
 			return fmt.Errorf("failed to initialize VirtualMachineClass controller: %w", err)
 		}
+
+		// vCenter-agnostic controllers (pure K8s API operations)
+		if err := virtualmachineservice.AddToManager(ctx, mgr); err != nil {
+			return fmt.Errorf("failed to initialize VirtualMachineService controller: %w", err)
+		}
+
+		if config.Features.K8sWorkloadMgmtAPI {
+			if err := virtualmachinereplicaset.AddToManager(ctx, mgr); err != nil {
+				return fmt.Errorf("failed to initialize VirtualMachineReplicaSet controller: %w", err)
+			}
+		}
+
 		return nil
 	}
 
@@ -59,9 +72,6 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 	if err := virtualmachineclass.AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed to initialize VirtualMachineClass controller: %w", err)
 	}
-	if err := virtualmachineservice.AddToManager(ctx, mgr); err != nil {
-		return fmt.Errorf("failed to initialize VirtualMachineService controller: %w", err)
-	}
 	if err := virtualmachinesetresourcepolicy.AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed to initialize VirtualMachineSetResourcePolicy controller: %w", err)
 	}
@@ -70,12 +80,6 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 	}
 	if err := virtualmachinepublishrequest.AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed to initialize VirtualMachinePublishRequest controller: %w", err)
-	}
-
-	if config.Features.K8sWorkloadMgmtAPI {
-		if err := virtualmachinereplicaset.AddToManager(ctx, mgr); err != nil {
-			return fmt.Errorf("failed to initialize VirtualMachineReplicaSet controller: %w", err)
-		}
 	}
 
 	if config.Features.FastDeploy {

@@ -17,7 +17,10 @@ func AddToManager(
 	ctx *pkgctx.ControllerManagerContext,
 	mgr manager.Manager) error {
 
-	if pkgcfg.FromContext(ctx).AsyncSignalEnabled {
+	config := pkgcfg.FromContext(ctx)
+
+	// VM watcher service requires vCenter access, only run in per-vCenter containers
+	if config.IsPerVCenterMode() && config.AsyncSignalEnabled {
 		if err := vmwatcher.AddToManager(ctx, mgr); err != nil {
 			return err
 		}

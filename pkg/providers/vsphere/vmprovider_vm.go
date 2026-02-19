@@ -2171,7 +2171,15 @@ func (vs *vSphereVMProvider) vmCreateGetVirtualMachineImage(
 	switch providerRef.Kind {
 	case "ClusterContentLibraryItem", "ContentLibraryItem":
 		createArgs.UseContentLibrary = true
-		createArgs.ProviderItemID = imageStatus.ProviderItemID
+		
+		// In multi-vCenter scenarios, a VMI may have multiple ContentLibraryItem owners
+		// from different vCenters. Use owner references to find the ContentLibraryItem
+		// that belongs to the current vCenter.
+		providerItemID, err := vs.getProviderItemIDForCurrentVCenter(vmCtx, imageObj)
+		if err != nil {
+			return err
+		}
+		createArgs.ProviderItemID = providerItemID
 	default:
 		if !SkipVMImageCLProviderCheck {
 			err := fmt.Errorf("unsupported image provider kind: %s", providerRef.Kind)
@@ -2184,6 +2192,85 @@ func (vs *vSphereVMProvider) vmCreateGetVirtualMachineImage(
 	}
 
 	return nil
+}
+
+// getProviderItemIDForCurrentVCenter finds the ContentLibraryItem that belongs to the current
+// vCenter by checking the VMI's owner references. Since per-vCenter containers have label
+// selectors on their ContentLibraryItem informers, a successful Get() guarantees the item
+// belongs to the current vCenter.
+func (vs *vSphereVMProvider) getProviderItemIDForCurrentVCenter(
+	vmCtx pkgctx.VirtualMachineContext,
+	imageObj ctrlclient.Object) (string, error) {
+
+	vcenterUUID := pkgcfg.FromContext(vmCtx).VCenterInstanceUUID
+	
+	vmCtx.Logger.Info("Looking up ContentLibraryItem for current vCenter",
+		"vcenterUUID", vcenterUUID,
+		"imageName", imageObj.GetName(),
+		"ownerRefCount", len(imageObj.GetOwnerReferences()))
+
+	// Check all owner references to find ContentLibraryItems
+	for _, ownerRef := range imageObj.GetOwnerReferences() {
+		if ownerRef.Kind != "ContentLibraryItem" && ownerRef.Kind != "ClusterContentLibraryItem" {
+			continue
+		}
+
+		vmCtx.Logger.Info("Checking ContentLibraryItem owner reference",
+			"kind", ownerRef.Kind,
+			"name", ownerRef.Name)
+
+		if ownerRef.Kind == "ContentLibraryItem" {
+			var clitem imgregv1.ContentLibraryItem
+			if err := vs.k8sClient.Get(vmCtx, ctrlclient.ObjectKey{
+				Name:      ownerRef.Name,
+				Namespace: imageObj.GetNamespace(),
+			}, &clitem); err != nil {
+				// Item not in cache - must belong to a different vCenter
+				vmCtx.Logger.Info("ContentLibraryItem not in cache (belongs to different vCenter)",
+					"name", ownerRef.Name,
+					"error", err)
+				continue
+			}
+			// Get succeeded - this item belongs to current vCenter
+			vmCtx.Logger.Info("Found ContentLibraryItem for current vCenter",
+				"name", clitem.Name,
+				"specID", clitem.Spec.ID,
+				"vcenterLabel", clitem.Labels["vmoperator.vmware.com/vcenter-id"])
+			return clitem.Spec.ID, nil
+		} else {
+			// ClusterContentLibraryItem
+			var cclitem imgregv1.ClusterContentLibraryItem
+			if err := vs.k8sClient.Get(vmCtx, ctrlclient.ObjectKey{
+				Name: ownerRef.Name,
+			}, &cclitem); err != nil {
+				// Item not in cache - must belong to a different vCenter
+				vmCtx.Logger.Info("ClusterContentLibraryItem not in cache (belongs to different vCenter)",
+					"name", ownerRef.Name,
+					"error", err)
+				continue
+			}
+			// Get succeeded - this item belongs to current vCenter
+			vmCtx.Logger.Info("Found ClusterContentLibraryItem for current vCenter",
+				"name", cclitem.Name,
+				"specID", cclitem.Spec.ID,
+				"vcenterLabel", cclitem.Labels["vmoperator.vmware.com/vcenter-id"])
+			return cclitem.Spec.ID, nil
+		}
+	}
+
+	// Fallback to the VMI's status.ProviderItemID if no vCenter-specific item found
+	// This maintains backward compatibility with single-vCenter deployments
+	vmCtx.Logger.V(4).Info("No ContentLibraryItem found for current vCenter, using VMI status",
+		"vcenterUUID", vcenterUUID)
+	
+	if vmi, ok := imageObj.(*vmopv1.VirtualMachineImage); ok {
+		return vmi.Status.ProviderItemID, nil
+	}
+	if cvmi, ok := imageObj.(*vmopv1.ClusterVirtualMachineImage); ok {
+		return cvmi.Status.ProviderItemID, nil
+	}
+	
+	return "", fmt.Errorf("failed to find ContentLibraryItem for vCenter %s", vcenterUUID)
 }
 
 func (vs *vSphereVMProvider) vmCreateGetSetResourcePolicy(

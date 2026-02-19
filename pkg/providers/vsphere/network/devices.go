@@ -163,6 +163,14 @@ func findMatchingEthCardNetOpNetIf(
 			}
 		}
 
+		// Check for opaque backing with NetworkInterface CR UID (used during initial
+		// VM creation when cluster placement is not yet known).
+		if opaque, ok := ethCard.Backing.(*vimtypes.VirtualEthernetCardOpaqueNetworkBackingInfo); ok {
+			if opaque.OpaqueNetworkId == string(netIf.UID) {
+				return i
+			}
+		}
+
 		dvpg, ok := ethCard.Backing.(*vimtypes.VirtualEthernetCardDistributedVirtualPortBackingInfo)
 		if ok && dvpg.Port.PortgroupKey == netIf.Status.NetworkID {
 			return i

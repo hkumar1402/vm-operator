@@ -19,7 +19,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -94,21 +93,15 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 			LogConstructor:          pkglog.ControllerLogConstructor(controllerNameShort, controlledType, mgr.GetScheme()),
 		})
 
-	// Watch VirtualMachines with label filtering.
-	// VM controller only runs in per-vCenter containers (ensured by controllers.go)
-	vcenterUUID := pkgcfg.FromContext(ctx).VCenterInstanceUUID
+	// Watch VirtualMachines.
+	// VM controller only runs in per-vCenter containers (ensured by controllers.go).
+	// Cache is configured to only watch VMs with matching vCenter label.
 	builder = builder.Watches(
 		controlledType,
 		&kubeutil.EnqueueRequestForObject{
 			Logger:      ctrl.Log.WithName("vmqueue"),
 			GetPriority: kubeutil.GetVirtualMachineReconcilePriority,
-		}).
-		WithEventFilter(
-			predicate.NewPredicateFuncs(func(obj client.Object) bool {
-				// Include VMs with matching vCenter label or no label (backward compatibility)
-				vmVCenterID := obj.GetLabels()[pkgconst.VCenterIDLabel]
-				return vmVCenterID == "" || vmVCenterID == vcenterUUID
-			}))
+		})
 
 	builder = builder.Watches(&vmopv1.VirtualMachineClass{},
 		handler.EnqueueRequestsFromMapFunc(classToVMMapperFn(ctx, r.Client)))

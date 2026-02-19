@@ -90,11 +90,17 @@ func main() {
 
 	initRateLimiting()
 
-	waitForWebhookCertificates()
+	// Webhooks only run in global container mode
+	if defaultConfig.IsGlobalMode() {
+		waitForWebhookCertificates()
+	}
 
 	initManager()
 
-	initWebhookServer(managerOpts.EnableWebhookClientVerification)
+	// Webhook server only needed in global container mode
+	if defaultConfig.IsGlobalMode() {
+		initWebhookServer(managerOpts.EnableWebhookClientVerification)
+	}
 
 	initSIGUSR2RestartHandler()
 
@@ -402,7 +408,11 @@ func initManager() {
 		if err := services.AddToManager(ctx, mgr); err != nil {
 			return err
 		}
-		return webhooks.AddToManager(ctx, mgr)
+		// Webhooks only run in global container mode
+		if pkgcfg.FromContext(ctx).IsGlobalMode() {
+			return webhooks.AddToManager(ctx, mgr)
+		}
+		return nil
 	}
 
 	setupLog.Info("Creating controller manager")

@@ -119,6 +119,12 @@ func (vs *vSphereVMProvider) getVcClient(ctx context.Context) (*vcclient.Client,
 		return nil, err
 	}
 
+	// Global container: No vCenter client needed
+	// Global containers only run webhooks and shared controllers that don't access vCenter
+	if config == nil {
+		return nil, fmt.Errorf("vCenter client not available in global container mode")
+	}
+
 	vcClient, err := vcclient.NewClient(ctx, config)
 	if err != nil {
 		return nil, err
@@ -592,17 +598,15 @@ func (vs *vSphereVMProvider) computeCPUMinFrequency(ctx context.Context) (uint64
 	}
 
 	var errs []error
-
 	var minFreq uint64
-	for _, az := range availabilityZones {
-		moIDs := az.Spec.ClusterComputeResourceMoIDs
-		if len(moIDs) == 0 {
-			moIDs = []string{az.Spec.ClusterComputeResourceMoId} // HA TEMP
-		}
 
-		for _, moID := range moIDs {
+	for _, az := range availabilityZones {
+		// Use wrapper method to get filtered and parsed cluster MoIDs
+		clusterMoIDs := az.GetClusterMoIDs()
+
+		for _, clusterMoID := range clusterMoIDs {
 			ccr := object.NewClusterComputeResource(client.VimClient(),
-				vimtypes.ManagedObjectReference{Type: "ClusterComputeResource", Value: moID})
+				vimtypes.ManagedObjectReference{Type: "ClusterComputeResource", Value: clusterMoID})
 
 			freq, err := vcenter.ClusterMinCPUFreq(ctx, ccr)
 			if err != nil {

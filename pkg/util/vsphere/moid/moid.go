@@ -62,3 +62,16 @@ func FilterByVCenter(moIDs []string, vcenterUUID string) []ParsedMoID {
 	}
 	return filtered
 }
+
+// BelongsToVCenter checks if a single MoID belongs to the specified vCenter.
+// Returns true if the MoID matches the vCenter UUID or is in legacy format (empty UUID).
+// Returns false if the MoID explicitly belongs to a different vCenter.
+//
+// Example:
+//   BelongsToVCenter("resgroup-10:vc1-uuid", "vc1-uuid")  // true
+//   BelongsToVCenter("resgroup-10:vc2-uuid", "vc1-uuid")  // false
+//   BelongsToVCenter("resgroup-10", "vc1-uuid")           // true (legacy)
+func BelongsToVCenter(moID, vcenterUUID string) bool {
+	parsed := Parse(moID)
+	return parsed.VCenterUUID == "" || parsed.VCenterUUID == vcenterUUID
+}

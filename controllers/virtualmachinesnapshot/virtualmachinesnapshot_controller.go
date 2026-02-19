@@ -16,7 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha5"
 	pkgcnd "github.com/vmware-tanzu/vm-operator/pkg/conditions"
@@ -65,9 +64,8 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 		ctx.VMProvider,
 	)
 
-	// Snapshot controller only runs in per-vCenter containers (ensured by controllers.go)
-	vcenterUUID := pkgcfg.FromContext(ctx).VCenterInstanceUUID
-
+	// Snapshot controller only runs in per-vCenter containers (ensured by controllers.go).
+	// Cache is configured to only watch snapshots with matching vCenter label.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(controlledType).
 		WithOptions(controller.Options{
@@ -75,13 +73,6 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 			SkipNameValidation:      SkipNameValidation,
 			LogConstructor:          pkglog.ControllerLogConstructor(controllerNameShort, controlledType, mgr.GetScheme()),
 		}).
-		WithEventFilter(
-			predicate.NewPredicateFuncs(func(obj client.Object) bool {
-				// Filter snapshots by vCenter ID label (copied from parent VM by mutation webhook)
-				// Include snapshots without label for backward compatibility
-				snapshotVCenterID := obj.GetLabels()[constants.VCenterIDLabel]
-				return snapshotVCenterID == "" || snapshotVCenterID == vcenterUUID
-			})).
 		Complete(r)
 }
 

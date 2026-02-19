@@ -152,7 +152,7 @@ func CreateAndWaitForNetworkInterfaces(
 
 		switch networkType {
 		case pkgcfg.NetworkProviderTypeVDS:
-			result, err = createNetOPNetworkInterface(vmCtx, client, vimClient, interfaceSpec)
+			result, err = createNetOPNetworkInterface(vmCtx, client, vimClient, clusterMoRef, interfaceSpec)
 		case pkgcfg.NetworkProviderTypeNSXT:
 			result, err = createNCPNetworkInterface(vmCtx, client, vimClient, clusterMoRef, interfaceSpec)
 		case pkgcfg.NetworkProviderTypeVPC:
@@ -361,6 +361,7 @@ func createNetOPNetworkInterface(
 	vmCtx pkgctx.VirtualMachineContext,
 	client ctrlclient.Client,
 	vimClient *vim25.Client,
+	clusterMoRef *vimtypes.ManagedObjectReference,
 	interfaceSpec *vmopv1.VirtualMachineNetworkInterfaceSpec) (*NetworkInterfaceResult, error) {
 
 	var (
@@ -421,6 +422,7 @@ func createNetOPNetworkInterface(
 		if networkRefName != "" {
 			netIf.Spec.NetworkName = networkRefName
 		}
+		
 		// NetOP only defines a VMXNet3 type, but it doesn't really matter for our purposes.
 		netIf.Spec.Type = netopv1alpha1.NetworkInterfaceTypeVMXNet3
 		return nil
@@ -441,6 +443,17 @@ func createNetOPNetworkInterface(
 	// To better really support this, we should add a MAC address field to the Spec.
 	if interfaceSpec.MACAddr != "" {
 		netIf.Status.MacAddress = interfaceSpec.MACAddr
+	}
+
+	// When cluster placement is not yet known (clusterMoRef == nil), use opaque
+	// backing with NetworkInterface CR UID as identifier. This enables stable
+	// ethernet card matching during updates, independent of MAC address.
+	// The backing will be updated to actual DVPG after VM placement.
+	if clusterMoRef == nil {
+		result := netOpNetIfToResult(vimClient, netIf)
+		result.Backing = newVDSOpaqueNetwork(string(netIf.UID))
+		result.ExternalID = string(netIf.UID)
+		return result, nil
 	}
 
 	return netOpNetIfToResult(vimClient, netIf), nil
