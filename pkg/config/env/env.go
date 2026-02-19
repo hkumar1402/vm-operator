@@ -51,6 +51,7 @@ const (
 	WebhookSecretName
 	WebhookSecretNamespace
 	CRDCleanupEnabled
+	VCenterInstanceUUID
 	FSSInstanceStorage
 	FSSK8sWorkloadMgmtAPI
 	FSSPodVMOnStretchedSupervisor
@@ -169,6 +170,8 @@ func (n VarName) String() string {
 		return "WEBHOOK_SECRET_NAMESPACE"
 	case CRDCleanupEnabled:
 		return "CRD_CLEANUP_ENABLED"
+	case VCenterInstanceUUID:
+		return "VCENTER_INSTANCE_UUID"
 
 	//
 	// Features/Capabilities

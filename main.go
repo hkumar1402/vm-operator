@@ -181,6 +181,26 @@ func initRateLimiting() {
 	managerOpts.KubeConfig = cfg
 }
 
+// getLeaderElectionID returns the leader election lock name based on the vCenter UUID.
+// Each container (global + per-vCenter) must have a unique lock name to prevent conflicts
+// and allow all containers to run simultaneously.
+//
+// Multi-vCenter deployment (assumes always running in multi-vCenter setup):
+//   - If vcenterUUID is set: Per-vCenter container -> "<baseID>-<vcenterUUID>"
+//   - If vcenterUUID is empty: Global/Shared container -> "<baseID>-global"
+//
+// Examples:
+//   - Global: "vmoperator-controller-manager-runtime-global"
+//   - Per-vCenter: "vmoperator-controller-manager-runtime-52f9b3e1-8d4a-4c3b-9a1e-2f7d8c5b4a3e"
+func getLeaderElectionID(vcenterUUID, baseID string) string {
+	if vcenterUUID != "" {
+		// Per-vCenter container
+		return baseID + "-" + vcenterUUID
+	}
+	// Global/Shared container
+	return baseID + "-global"
+}
+
 func initFlags() {
 	flag.IntVar(
 		&rateLimiterQPS,
@@ -307,6 +327,15 @@ func initFlags() {
 	}
 
 	flag.Parse()
+
+	// Update leader election ID based on vCenter UUID to ensure each container
+	// has a unique lock name and can run simultaneously.
+	// Global container: <baseID>-global
+	// Per-vCenter container: <baseID>-<vcenter-uuid>
+	managerOpts.LeaderElectionID = getLeaderElectionID(
+		defaultConfig.VCenterInstanceUUID,
+		managerOpts.LeaderElectionID,
+	)
 }
 
 func initLogging() {

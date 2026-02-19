@@ -161,6 +161,23 @@ type Config struct {
 	// Please note, this field has no effect if a CRD is being installed for the
 	// first time.
 	CRDCleanupEnabled bool
+
+	// VCenterInstanceUUID identifies which vCenter this container manages.
+	//
+	// If set (non-empty):
+	//   - Per-vCenter container mode
+	//   - Loads vCenter config: vsphere.provider.config.<uuid>
+	//   - Registers vCenter-dependent controllers (VM, Zone, ContentLibrary, etc.)
+	//   - Leader election lock: <baseID>-<uuid>
+	//
+	// If NOT set (empty):
+	//   - Global/Shared container mode
+	//   - Does NOT load vCenter config
+	//   - Registers webhooks and shared controllers only (VirtualMachineClass, etc.)
+	//   - Leader election lock: <baseID>-global
+	//
+	// This design assumes multi-vCenter setup with 1 global + N per-vCenter containers.
+	VCenterInstanceUUID string
 }
 
 // GetMaxDeployThreadsOnProvider returns MaxDeployThreadsOnProvider if it is >0
@@ -173,6 +190,18 @@ func (c Config) GetMaxDeployThreadsOnProvider() int {
 	return int(
 		float64(c.MaxConcurrentReconciles) /
 			(float64(100) / float64(c.MaxCreateVMsOnProvider)))
+}
+
+// IsGlobalMode returns true if this container is running in global/shared mode,
+// handling webhooks and shared resources without vCenter access.
+func (c Config) IsGlobalMode() bool {
+	return c.VCenterInstanceUUID == ""
+}
+
+// IsPerVCenterMode returns true if this container is running in per-vCenter mode,
+// managing resources for a specific vCenter instance.
+func (c Config) IsPerVCenterMode() bool {
+	return c.VCenterInstanceUUID != ""
 }
 
 type FeatureStates struct {

@@ -171,23 +171,62 @@ func getProviderConfigMap(
 	return configMap, nil
 }
 
-// GetProviderConfig returns a provider config constructed from vSphere Provider ConfigMap in the VM Operator namespace.
+// GetProviderConfig returns a provider config constructed from vSphere Provider ConfigMap.
+// In multi-vCenter deployments:
+//   - Per-vCenter containers: Uses GetProviderConfigForVCenter() with UUID-based discovery
+//   - Global containers: Returns nil (global containers don't need vCenter access)
 func GetProviderConfig(
 	ctx context.Context,
 	client ctrlclient.Client) (*VSphereVMProviderConfig, error) {
 
-	configMap, err := getProviderConfigMap(ctx, client)
-	if err != nil {
-		return nil, err
+	config := pkgcfg.FromContext(ctx)
+
+	// Per-vCenter container: Load vCenter-specific config
+	if config.IsPerVCenterMode() {
+		return GetProviderConfigForVCenter(ctx, client, config.VCenterInstanceUUID)
 	}
 
-	vcCreds, err := credentials.GetProviderCredentials(
-		ctx,
-		client,
-		configMap.Namespace,
-		pkgcfg.FromContext(ctx).VCCredsSecretName)
+	// Global container: No vCenter config needed
+	// Global containers only run webhooks and shared controllers that don't access vCenter
+	return nil, nil
+}
+
+// GetProviderConfigForVCenter returns a provider config for a specific vCenter instance.
+// This function is used in multi-vCenter deployments where ConfigMaps and Secrets
+// are named with the vCenter instance UUID.
+//
+// ConfigMap naming: vsphere.provider.config.<vcenter-instance-uuid>
+// Secret naming: vsphere.provider.credentials.<vcenter-instance-uuid>
+//
+// Example:
+//   vcenterUUID := "52f9b3e1-8d4a-4c3b-9a1e-2f7d8c5b4a3e"
+//   config, err := GetProviderConfigForVCenter(ctx, client, vcenterUUID)
+//   // Looks for ConfigMap: vsphere.provider.config.52f9b3e1-8d4a-4c3b-9a1e-2f7d8c5b4a3e
+//   // Looks for Secret: vsphere.provider.credentials.52f9b3e1-8d4a-4c3b-9a1e-2f7d8c5b4a3e
+func GetProviderConfigForVCenter(
+	ctx context.Context,
+	client ctrlclient.Client,
+	vcenterInstanceUUID string) (*VSphereVMProviderConfig, error) {
+
+	if vcenterInstanceUUID == "" {
+		return nil, fmt.Errorf("vcenterInstanceUUID cannot be empty")
+	}
+
+	vmopNamespace := pkgcfg.FromContext(ctx).PodNamespace
+
+	// Discover ConfigMap by vCenter instance UUID
+	configMapName := fmt.Sprintf("vsphere.provider.config.%s", vcenterInstanceUUID)
+	configMap := &corev1.ConfigMap{}
+	configMapKey := ctrlclient.ObjectKey{Name: configMapName, Namespace: vmopNamespace}
+	if err := client.Get(ctx, configMapKey, configMap); err != nil {
+		return nil, fmt.Errorf("error retrieving vCenter-specific ConfigMap %s: %w", configMapKey, err)
+	}
+
+	// Discover Secret by vCenter instance UUID
+	secretName := fmt.Sprintf("vsphere.provider.credentials.%s", vcenterInstanceUUID)
+	vcCreds, err := credentials.GetProviderCredentials(ctx, client, vmopNamespace, secretName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error retrieving vCenter-specific credentials from secret %s: %w", secretName, err)
 	}
 
 	providerConfig, err := ConfigMapToProviderConfig(configMap, vcCreds)
