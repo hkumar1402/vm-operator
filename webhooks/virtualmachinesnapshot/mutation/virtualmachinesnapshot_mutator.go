@@ -11,6 +11,7 @@ import (
 	"reflect"
 
 	admissionv1 "k8s.io/api/admission/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -20,6 +21,7 @@ import (
 
 	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha5"
 	"github.com/vmware-tanzu/vm-operator/pkg/builder"
+	"github.com/vmware-tanzu/vm-operator/pkg/constants"
 	pkgctx "github.com/vmware-tanzu/vm-operator/pkg/context"
 )
 
@@ -63,8 +65,21 @@ func (m mutator) Mutate(ctx *pkgctx.WebhookRequestContext) admission.Response {
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
+	var wasMutated bool
+
 	// Always set the VM name label on create
-	if wasMutated := SetVMNameLabel(modified); !wasMutated {
+	if SetVMNameLabel(modified) {
+		wasMutated = true
+	}
+
+	// Copy vCenter ID label from parent VM for multi-vCenter filtering
+	if copied, err := m.copyVCenterLabelFromVM(ctx, modified); err != nil {
+		return admission.Errored(http.StatusInternalServerError, err)
+	} else if copied {
+		wasMutated = true
+	}
+
+	if !wasMutated {
 		return admission.Allowed("")
 	}
 
@@ -106,4 +121,48 @@ func SetVMNameLabel(vmSnapshot *vmopv1.VirtualMachineSnapshot) bool {
 	}
 
 	return false
+}
+
+// copyVCenterLabelFromVM copies the vCenter ID label from the parent VM to the snapshot.
+// This ensures per-vCenter containers only process snapshots for their VMs.
+// Returns true if the label was copied, false if VM doesn't have the label or snapshot already has it.
+func (m mutator) copyVCenterLabelFromVM(
+	ctx *pkgctx.WebhookRequestContext,
+	vmSnapshot *vmopv1.VirtualMachineSnapshot) (bool, error) {
+
+	// Skip if snapshot already has vCenter label
+	if vmSnapshot.Labels != nil && vmSnapshot.Labels[constants.VCenterIDLabel] != "" {
+		return false, nil
+	}
+
+	// Skip if no VM name specified
+	if vmSnapshot.Spec.VMName == "" {
+		return false, nil
+	}
+
+	// Get the parent VM
+	vm := &vmopv1.VirtualMachine{}
+	vmKey := ctrlclient.ObjectKey{
+		Name:      vmSnapshot.Spec.VMName,
+		Namespace: vmSnapshot.Namespace,
+	}
+	if err := m.client.Get(ctx, vmKey, vm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get parent VM %s: %w", vmKey, err)
+	}
+
+	// Copy vCenter label from VM to snapshot
+	vmVCenterID := vm.Labels[constants.VCenterIDLabel]
+	if vmVCenterID == "" {
+		return false, nil
+	}
+
+	if vmSnapshot.Labels == nil {
+		vmSnapshot.Labels = make(map[string]string)
+	}
+	vmSnapshot.Labels[constants.VCenterIDLabel] = vmVCenterID
+
+	return true, nil
 }

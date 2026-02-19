@@ -94,26 +94,21 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 			LogConstructor:          pkglog.ControllerLogConstructor(controllerNameShort, controlledType, mgr.GetScheme()),
 		})
 
-	// Watch VirtualMachines with label filtering for per-vCenter containers.
-	watchBuilder := builder.Watches(
+	// Watch VirtualMachines with label filtering.
+	// VM controller only runs in per-vCenter containers (ensured by controllers.go)
+	vcenterUUID := pkgcfg.FromContext(ctx).VCenterInstanceUUID
+	builder = builder.Watches(
 		controlledType,
 		&kubeutil.EnqueueRequestForObject{
 			Logger:      ctrl.Log.WithName("vmqueue"),
 			GetPriority: kubeutil.GetVirtualMachineReconcilePriority,
-		})
-
-	// In per-vCenter mode, filter VMs by vCenter ID label
-	if pkgcfg.FromContext(ctx).IsPerVCenterMode() {
-		vcenterUUID := pkgcfg.FromContext(ctx).VCenterInstanceUUID
-		watchBuilder = watchBuilder.WithEventFilter(
+		}).
+		WithEventFilter(
 			predicate.NewPredicateFuncs(func(obj client.Object) bool {
 				// Include VMs with matching vCenter label or no label (backward compatibility)
 				vmVCenterID := obj.GetLabels()[pkgconst.VCenterIDLabel]
 				return vmVCenterID == "" || vmVCenterID == vcenterUUID
 			}))
-	}
-
-	builder = watchBuilder
 
 	builder = builder.Watches(&vmopv1.VirtualMachineClass{},
 		handler.EnqueueRequestsFromMapFunc(classToVMMapperFn(ctx, r.Client)))
