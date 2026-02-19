@@ -12,8 +12,10 @@ import (
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -35,6 +37,7 @@ import (
 	"github.com/vmware-tanzu/vm-operator/pkg/record"
 	imgutil "github.com/vmware-tanzu/vm-operator/pkg/util/image"
 	"github.com/vmware-tanzu/vm-operator/pkg/util/ovfcache"
+	"github.com/vmware-tanzu/vm-operator/pkg/util/ptr"
 	vmopv1util "github.com/vmware-tanzu/vm-operator/pkg/util/vmopv1"
 )
 
@@ -409,11 +412,11 @@ func (r *Reconciler) setUpVMIFromCLItem(
 		panic("vmiStatus is nil")
 	}
 
-	if err := controllerutil.SetControllerReference(
-		cliObj,
-		vmiObj,
-		r.Scheme()); err != nil {
-
+	// Add this ContentLibraryItem as a non-controller owner reference.
+	// This allows multiple ContentLibraryItems (from different vCenters subscribing
+	// to the same content library) to share a single VirtualMachineImage.
+	// The VMI is only deleted when ALL ContentLibraryItems are deleted.
+	if err := addOwnerReferenceIfNotPresent(cliObj, vmiObj, r.Scheme()); err != nil {
 		return err
 	}
 
@@ -540,4 +543,41 @@ func GetAppropriateFinalizers(obj client.Object) (string, string) {
 		return CLItemFinalizer, DeprecatedCLItemFinalizer
 	}
 	return CCLItemFinalizer, DeprecatedCCLItemFinalizer
+}
+
+// addOwnerReferenceIfNotPresent adds a non-controller owner reference from owner to owned.
+// This is used instead of SetControllerReference to allow multiple ContentLibraryItems
+// (from different vCenters) to share a single VirtualMachineImage.
+//
+// Unlike SetControllerReference:
+//   - Sets controller=false (allows multiple owners)
+//   - Checks if owner reference already exists before adding
+//   - Preserves existing owner references
+func addOwnerReferenceIfNotPresent(owner, owned client.Object, scheme *runtime.Scheme) error {
+	ownerGVK, err := apiutil.GVKForObject(owner, scheme)
+	if err != nil {
+		return fmt.Errorf("failed to get GVK for owner: %w", err)
+	}
+
+	ownerRefs := owned.GetOwnerReferences()
+	
+	// Check if this owner is already present
+	for _, ref := range ownerRefs {
+		if ref.UID == owner.GetUID() {
+			return nil
+		}
+	}
+
+	// Add new owner reference
+	newRef := metav1.OwnerReference{
+		APIVersion:         ownerGVK.GroupVersion().String(),
+		Kind:               ownerGVK.Kind,
+		Name:               owner.GetName(),
+		UID:                owner.GetUID(),
+		Controller:         ptr.To(false),
+		BlockOwnerDeletion: ptr.To(true),
+	}
+
+	owned.SetOwnerReferences(append(ownerRefs, newRef))
+	return nil
 }

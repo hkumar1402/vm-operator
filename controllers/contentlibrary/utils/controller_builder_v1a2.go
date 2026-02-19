@@ -413,11 +413,11 @@ func (r *ReconcilerV1A2) setUpVMIFromCLItem(
 		panic("vmiStatus is nil")
 	}
 
-	if err := controllerutil.SetControllerReference(
-		cliObj,
-		vmiObj,
-		r.Scheme()); err != nil {
-
+	// Add this ContentLibraryItem as a non-controller owner reference.
+	// This allows multiple ContentLibraryItems (from different vCenters subscribing
+	// to the same content library) to share a single VirtualMachineImage.
+	// The VMI is only deleted when ALL ContentLibraryItems are deleted.
+	if err := addOwnerReferenceIfNotPresent(cliObj, vmiObj, r.Scheme()); err != nil {
 		return err
 	}
 

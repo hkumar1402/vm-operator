@@ -767,6 +767,8 @@ func (v validator) validateImageVCenterCompatibility(
 	}
 
 	// Check compatibility
+	// Allow images without vCenter label (shared images from common content libraries)
+	// Only reject if image has a different vCenter label
 	if imageVCenterID != "" && imageVCenterID != vcenterID {
 		allErrs = append(allErrs, field.Invalid(
 			imagePath,

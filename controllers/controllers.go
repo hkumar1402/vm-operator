@@ -28,8 +28,22 @@ import (
 	pkgctx "github.com/vmware-tanzu/vm-operator/pkg/context"
 )
 
-// AddToManager adds all controllers to the provided manager.
+// AddToManager adds controllers to the provided manager based on container mode.
+// In multi-vCenter deployments:
+//   - Global container: Registers only shared controllers (VirtualMachineClass)
+//   - Per-vCenter container: Registers vCenter-dependent controllers with label filtering
 func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) error {
+	config := pkgcfg.FromContext(ctx)
+
+	// Global container: Only register shared controllers
+	if config.IsGlobalMode() {
+		if err := virtualmachineclass.AddToManager(ctx, mgr); err != nil {
+			return fmt.Errorf("failed to initialize VirtualMachineClass controller: %w", err)
+		}
+		return nil
+	}
+
+	// Per-vCenter container: Register all vCenter-dependent controllers
 	if err := contentlibrary.AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed to initialize ContentLibrary controllers: %w", err)
 	}
@@ -58,25 +72,25 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 		return fmt.Errorf("failed to initialize VirtualMachinePublishRequest controller: %w", err)
 	}
 
-	if pkgcfg.FromContext(ctx).Features.K8sWorkloadMgmtAPI {
+	if config.Features.K8sWorkloadMgmtAPI {
 		if err := virtualmachinereplicaset.AddToManager(ctx, mgr); err != nil {
 			return fmt.Errorf("failed to initialize VirtualMachineReplicaSet controller: %w", err)
 		}
 	}
 
-	if pkgcfg.FromContext(ctx).Features.FastDeploy {
+	if config.Features.FastDeploy {
 		if err := virtualmachineimagecache.AddToManager(ctx, mgr); err != nil {
 			return fmt.Errorf("failed to initialize VMI controllers: %w", err)
 		}
 	}
 
-	if pkgcfg.FromContext(ctx).Features.VMSnapshots {
+	if config.Features.VMSnapshots {
 		if err := virtualmachinesnapshot.AddToManager(ctx, mgr); err != nil {
 			return fmt.Errorf("failed to initialize VirtualMachineSnapshot controller: %w", err)
 		}
 	}
 
-	if pkgcfg.FromContext(ctx).Features.VMGroups {
+	if config.Features.VMGroups {
 		if err := virtualmachinegroup.AddToManager(ctx, mgr); err != nil {
 			return fmt.Errorf("failed to initialize VMG controller: %w", err)
 		}
@@ -85,7 +99,7 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 		}
 	}
 
-	if pkgcfg.FromContext(ctx).Features.VSpherePolicies {
+	if config.Features.VSpherePolicies {
 		if err := vspherepolicy.AddToManager(ctx, mgr); err != nil {
 			return fmt.Errorf("failed to initialize vSphere Policy controllers: %w", err)
 		}

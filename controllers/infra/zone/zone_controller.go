@@ -25,6 +25,7 @@ import (
 	pkglog "github.com/vmware-tanzu/vm-operator/pkg/log"
 	"github.com/vmware-tanzu/vm-operator/pkg/patch"
 	"github.com/vmware-tanzu/vm-operator/pkg/record"
+	"github.com/vmware-tanzu/vm-operator/pkg/util/vsphere/moid"
 	"github.com/vmware-tanzu/vm-operator/pkg/util/vsphere/watcher"
 )
 
@@ -126,6 +127,21 @@ func (r *Reconciler) ReconcileDelete(
 	obj *topologyv1.Zone) (ctrl.Result, error) {
 
 	if val := obj.Spec.ManagedVMs.FolderMoID; val != "" {
+		// In per-vCenter mode, parse MoID to get actual folder ID
+		if pkgcfg.FromContext(ctx).IsPerVCenterMode() {
+			parsed := moid.Parse(val)
+			vcenterUUID := pkgcfg.FromContext(ctx).VCenterInstanceUUID
+			
+			// Skip if folder belongs to a different vCenter
+			if parsed.VCenterUUID != "" && parsed.VCenterUUID != vcenterUUID {
+				controllerutil.RemoveFinalizer(obj, Finalizer)
+				return ctrl.Result{}, nil
+			}
+			
+			// Use the actual MoID (without vCenter suffix) for watcher
+			val = parsed.MoID
+		}
+		
 		if err := watcher.Remove(
 			ctx,
 			vimtypes.ManagedObjectReference{
@@ -158,6 +174,21 @@ func (r *Reconciler) ReconcileNormal(
 	}
 
 	if val := obj.Spec.ManagedVMs.FolderMoID; val != "" {
+		// In per-vCenter mode, only watch folders belonging to this vCenter
+		if pkgcfg.FromContext(ctx).IsPerVCenterMode() {
+			parsed := moid.Parse(val)
+			vcenterUUID := pkgcfg.FromContext(ctx).VCenterInstanceUUID
+			
+			// Skip if folder belongs to a different vCenter
+			// Include legacy format (empty UUID) for backward compatibility
+			if parsed.VCenterUUID != "" && parsed.VCenterUUID != vcenterUUID {
+				return ctrl.Result{}, nil
+			}
+			
+			// Use the actual MoID (without vCenter suffix) for watcher
+			val = parsed.MoID
+		}
+		
 		if err := watcher.Add(
 			ctx,
 			vimtypes.ManagedObjectReference{
