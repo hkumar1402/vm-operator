@@ -17,7 +17,7 @@ func AddToManager(
 	ctx *pkgctx.ControllerManagerContext,
 	mgr manager.Manager) error {
 
-	if pkgcfg.FromContext(ctx).AsyncSignalEnabled {
+	if pkgcfg.FromContext(ctx).IsPerVCenterMode() && pkgcfg.FromContext(ctx).AsyncSignalEnabled {
 		if err := vmwatcher.AddToManager(ctx, mgr); err != nil {
 			return err
 		}

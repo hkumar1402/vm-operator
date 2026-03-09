@@ -30,6 +30,21 @@ import (
 
 // AddToManager adds all controllers to the provided manager.
 func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) error {
+	if pkgcfg.FromContext(ctx).IsGlobalMode() {
+		if err := virtualmachineclass.AddToManager(ctx, mgr); err != nil {
+			return fmt.Errorf("failed to initialize VirtualMachineClass controller: %w", err)
+		}
+		if err := virtualmachineservice.AddToManager(ctx, mgr); err != nil {
+			return fmt.Errorf("failed to initialize VirtualMachineService controller: %w", err)
+		}
+		if pkgcfg.FromContext(ctx).Features.K8sWorkloadMgmtAPI {
+			if err := virtualmachinereplicaset.AddToManager(ctx, mgr); err != nil {
+				return fmt.Errorf("failed to initialize VirtualMachineReplicaSet controller: %w", err)
+			}
+		}
+		return nil
+	}
+
 	if err := contentlibrary.AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed to initialize ContentLibrary controllers: %w", err)
 	}
@@ -45,9 +60,6 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 	if err := virtualmachineclass.AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed to initialize VirtualMachineClass controller: %w", err)
 	}
-	if err := virtualmachineservice.AddToManager(ctx, mgr); err != nil {
-		return fmt.Errorf("failed to initialize VirtualMachineService controller: %w", err)
-	}
 	if err := virtualmachinesetresourcepolicy.AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed to initialize VirtualMachineSetResourcePolicy controller: %w", err)
 	}
@@ -56,12 +68,6 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 	}
 	if err := virtualmachinepublishrequest.AddToManager(ctx, mgr); err != nil {
 		return fmt.Errorf("failed to initialize VirtualMachinePublishRequest controller: %w", err)
-	}
-
-	if pkgcfg.FromContext(ctx).Features.K8sWorkloadMgmtAPI {
-		if err := virtualmachinereplicaset.AddToManager(ctx, mgr); err != nil {
-			return fmt.Errorf("failed to initialize VirtualMachineReplicaSet controller: %w", err)
-		}
 	}
 
 	if pkgcfg.FromContext(ctx).Features.FastDeploy {

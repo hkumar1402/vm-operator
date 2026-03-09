@@ -253,6 +253,18 @@ const (
 	// created on behalf of a VM Operator VM. The value is the name of a VM.
 	CreatedByLabel = "vmoperator.vmware.com/created-by"
 
+	// VCenterIDLabel is the label key that indicates which vCenter instance
+	// a resource belongs to. The value is the vCenter instance UUID.
+	// This label is used in multi-vCenter deployments to route resources to
+	// the appropriate per-vCenter container.
+	//
+	// Resources labeled with this key:
+	//   - VirtualMachine: Assigned by mutation webhook during creation
+	//   - VirtualMachineImage: Auto-labeled by ContentLibrary controller
+	//   - ClusterVirtualMachineImage: Auto-labeled by ContentLibrary controller
+	//   - StorageClass: Labeled by external process or admission controller
+	VCenterIDLabel = "vmoperator.vmware.com/vcenter-id"
+
 	// NoUnmanagedVolumesRegisterAnnotationKey is the annotation to not create any CNSRegisterVolumes
 	// by skipping the unmanaged volume register reconcile.
 	NoUnmanagedVolumesRegisterAnnotationKey = "vmoperator.vmware.com/no-unmanaged-volumes-register"

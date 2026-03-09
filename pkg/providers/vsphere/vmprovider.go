@@ -119,6 +119,12 @@ func (vs *vSphereVMProvider) getVcClient(ctx context.Context) (*vcclient.Client,
 		return nil, err
 	}
 
+	// Global container: No vCenter client needed
+	// Global containers only run webhooks and shared controllers that don't access vCenter
+	if config == nil {
+		return nil, fmt.Errorf("vCenter client not available in global container mode")
+	}
+
 	vcClient, err := vcclient.NewClient(ctx, config)
 	if err != nil {
 		return nil, err

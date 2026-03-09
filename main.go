@@ -90,11 +90,17 @@ func main() {
 
 	initRateLimiting()
 
-	waitForWebhookCertificates()
+	// Webhooks only run in global container mode
+	if defaultConfig.IsGlobalMode() {
+		waitForWebhookCertificates()
+	}
 
 	initManager()
 
-	initWebhookServer(managerOpts.EnableWebhookClientVerification)
+	// Webhook server only needed in global container mode
+	if defaultConfig.IsGlobalMode() {
+		initWebhookServer(managerOpts.EnableWebhookClientVerification)
+	}
 
 	initSIGUSR2RestartHandler()
 
@@ -179,6 +185,17 @@ func initRateLimiting() {
 	}
 
 	managerOpts.KubeConfig = cfg
+}
+
+// getLeaderElectionID returns a unique leader election lock name per container.
+// Per-vCenter containers use "<baseID>-<vcenterUUID>"; the global container uses "<baseID>-global".
+func getLeaderElectionID(vcenterUUID, baseID string) string {
+	if vcenterUUID != "" {
+		// Per-vCenter container
+		return baseID + "-" + vcenterUUID
+	}
+	// Global/Shared container
+	return baseID + "-global"
 }
 
 func initFlags() {
@@ -307,6 +324,15 @@ func initFlags() {
 	}
 
 	flag.Parse()
+
+	// Update leader election ID based on vCenter UUID to ensure each container
+	// has a unique lock name and can run simultaneously.
+	// Global container: <baseID>-global
+	// Per-vCenter container: <baseID>-<vcenter-uuid>
+	managerOpts.LeaderElectionID = getLeaderElectionID(
+		defaultConfig.VCenterInstanceUUID,
+		managerOpts.LeaderElectionID,
+	)
 }
 
 func initLogging() {
@@ -373,7 +399,11 @@ func initManager() {
 		if err := services.AddToManager(ctx, mgr); err != nil {
 			return err
 		}
-		return webhooks.AddToManager(ctx, mgr)
+		// Webhooks only run in global container mode
+		if pkgcfg.FromContext(ctx).IsGlobalMode() {
+			return webhooks.AddToManager(ctx, mgr)
+		}
+		return nil
 	}
 
 	setupLog.Info("Creating controller manager")

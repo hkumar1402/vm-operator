@@ -11,6 +11,7 @@ import (
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,7 +39,9 @@ import (
 	vspherepolv1 "github.com/vmware-tanzu/vm-operator/external/vsphere-policy/api/v1alpha1"
 
 	vmopapi "github.com/vmware-tanzu/vm-operator/api"
+	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha5"
 	pkgcfg "github.com/vmware-tanzu/vm-operator/pkg/config"
+	"github.com/vmware-tanzu/vm-operator/pkg/constants"
 	pkgctx "github.com/vmware-tanzu/vm-operator/pkg/context"
 	"github.com/vmware-tanzu/vm-operator/pkg/record"
 )
@@ -90,14 +93,34 @@ func New(ctx context.Context, opts Options) (Manager, error) {
 		_ = vpcv1alpha1.AddToScheme(opts.Scheme)
 	}
 
+	// Build cache options with label-based filtering for per-vCenter containers
+	cacheOpts := cache.Options{
+		DefaultNamespaces: GetNamespaceCacheConfigs(opts.WatchNamespace),
+		DefaultTransform:  cache.TransformStripManagedFields(),
+		SyncPeriod:        &opts.SyncPeriod,
+	}
+
+	config := pkgcfg.FromContext(ctx)
+	if config.IsPerVCenterMode() {
+		// Per-vCenter containers: filter all VM-lifecycle resources by vcenter-id
+		// label so each container only caches resources it will reconcile.
+		cacheOpts.ByObject = getPerVCenterCacheConfig(config.VCenterInstanceUUID)
+	} else {
+		// Global container: VirtualMachine objects are watched by
+		// VirtualMachineService (needs labels + status.network for IPs) and
+		// VirtualMachineReplicaSet (needs labels + ownerReferences). Strip
+		// everything else to reduce per-object memory usage.
+		cacheOpts.ByObject = map[client.Object]cache.ByObject{
+			&vmopv1.VirtualMachine{}: {
+				Transform: vmForGlobalContainerTransform,
+			},
+		}
+	}
+
 	// Build the controller manager.
 	mgr, err := ctrlmgr.New(opts.KubeConfig, ctrlmgr.Options{
 		Scheme: opts.Scheme,
-		Cache: cache.Options{
-			DefaultNamespaces: GetNamespaceCacheConfigs(opts.WatchNamespace),
-			DefaultTransform:  cache.TransformStripManagedFields(),
-			SyncPeriod:        &opts.SyncPeriod,
-		},
+		Cache:  cacheOpts,
 		Client: client.Options{
 			Cache: &client.CacheOptions{
 				DisableFor: []client.Object{
@@ -182,4 +205,76 @@ type manager struct {
 
 func (m *manager) GetContext() *pkgctx.ControllerManagerContext {
 	return m.ctx
+}
+
+// getPerVCenterCacheConfig returns cache configuration for per-vCenter containers.
+// It filters resources by the vcenter-id label to reduce memory usage — each
+// container only caches resources that belong to its vCenter.
+func getPerVCenterCacheConfig(vcenterUUID string) map[client.Object]cache.ByObject {
+	labelSelector := labels.SelectorFromSet(labels.Set{
+		constants.VCenterIDLabel: vcenterUUID,
+	})
+
+	return map[client.Object]cache.ByObject{
+		// VM lifecycle resources: labeled by mutation webhook during creation.
+		&vmopv1.VirtualMachine{}: {
+			Label: labelSelector,
+		},
+		&vmopv1.VirtualMachineSnapshot{}: {
+			Label: labelSelector,
+		},
+		&vmopv1.VirtualMachineWebConsoleRequest{}: {
+			Label: labelSelector,
+		},
+		&vmopv1.VirtualMachinePublishRequest{}: {
+			Label: labelSelector,
+		},
+
+		// Content library items: labeled by image-registry-operator.
+		&imgregv1a1.ContentLibraryItem{}: {
+			Label: labelSelector,
+		},
+		&imgregv1.ContentLibraryItem{}: {
+			Label: labelSelector,
+		},
+
+		// Topology resources: labeled by WCP/supervisor bootstrap with vcenter-id.
+		// Per-vCenter containers only cache zones/AZs for their own vCenter.
+		// The global container does NOT use this config so it sees all zones.
+		&topologyv1.Zone{}: {
+			Label: labelSelector,
+		},
+		&topologyv1.AvailabilityZone{}: {
+			Label: labelSelector,
+		},
+
+		// Note: The following resources are NOT filtered and will be cached by all containers:
+		// - VirtualMachineClass: Shared resource (used across all vCenters)
+		// - VirtualMachineImage / ClusterVirtualMachineImage: Shared from content library
+		// - EncryptionClass: Global resource
+		// - StorageClass: Managed externally (labeled by CSI driver)
+	}
+}
+
+// vmForGlobalContainerTransform is a cache.TransformFunc applied to
+// VirtualMachine objects in the global container. The global container runs
+// VirtualMachineService (needs labels + status.network for IP addresses) and
+// VirtualMachineReplicaSet (needs labels + ownerReferences). Stripping spec
+// and the remainder of status significantly reduces per-object memory while
+// keeping the informer watch fully functional.
+func vmForGlobalContainerTransform(obj interface{}) (interface{}, error) {
+	vm, ok := obj.(*vmopv1.VirtualMachine)
+	if !ok {
+		return obj, nil
+	}
+	// Preserve a minimal shell: metadata (labels, ownerReferences,
+	// deletionTimestamp, etc.) and only the network portion of status.
+	stripped := &vmopv1.VirtualMachine{}
+	stripped.TypeMeta = vm.TypeMeta
+	stripped.ObjectMeta = vm.ObjectMeta
+	stripped.ObjectMeta.ManagedFields = nil // already done by DefaultTransform, be explicit
+	if vm.Status.Network != nil {
+		stripped.Status.Network = vm.Status.Network
+	}
+	return stripped, nil
 }

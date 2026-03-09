@@ -9,11 +9,14 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -35,6 +38,7 @@ import (
 	"github.com/vmware-tanzu/vm-operator/pkg/record"
 	imgutil "github.com/vmware-tanzu/vm-operator/pkg/util/image"
 	"github.com/vmware-tanzu/vm-operator/pkg/util/ovfcache"
+	"github.com/vmware-tanzu/vm-operator/pkg/util/ptr"
 	vmopv1util "github.com/vmware-tanzu/vm-operator/pkg/util/vmopv1"
 )
 
@@ -150,12 +154,22 @@ func (r *Reconciler) Reconcile(
 		obj, spec, status = &o, &o.Spec, &o.Status
 	}
 
-	vmiName, nameErr := GetImageFieldNameFromItem(req.Name)
+	// Wait for the ContentLibraryItem status to be fully populated before creating VMI.
+	// We check for the existence of the Ready condition (regardless of its value) to ensure
+	// that the status fields like SourceID have been populated by image-registry-operator.
+	// For subscribed libraries, SourceID will be present once the condition exists.
+	// For local libraries, SourceID will remain empty but we can proceed with local naming.
+	if !HasItemReadyCondition(status.Conditions) {
+		logger.V(4).Info("ContentLibraryItem status not yet populated, requeuing")
+		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+	}
+
+	vmiName, nameErr := GetImageFieldNameFromItemWithSourceID(req.Name, string(status.SourceID))
 	if nameErr != nil {
 		logger.Error(nameErr, "Unsupported library item name, skip reconciling")
 		return ctrl.Result{}, nil
 	}
-	logger = logger.WithValues("vmiName", vmiName)
+	logger = logger.WithValues("vmiName", vmiName, "sourceID", status.SourceID)
 
 	patchHelper, err := patch.NewHelper(obj, r.Client)
 	if err != nil {
@@ -409,11 +423,11 @@ func (r *Reconciler) setUpVMIFromCLItem(
 		panic("vmiStatus is nil")
 	}
 
-	if err := controllerutil.SetControllerReference(
-		cliObj,
-		vmiObj,
-		r.Scheme()); err != nil {
-
+	// Add this ContentLibraryItem as a non-controller owner reference.
+	// This allows multiple ContentLibraryItems (from different vCenters subscribing
+	// to the same content library) to share a single VirtualMachineImage.
+	// The VMI is only deleted when ALL ContentLibraryItems are deleted.
+	if err := addOwnerReferenceIfNotPresent(cliObj, vmiObj, r.Scheme()); err != nil {
 		return err
 	}
 
@@ -540,4 +554,41 @@ func GetAppropriateFinalizers(obj client.Object) (string, string) {
 		return CLItemFinalizer, DeprecatedCLItemFinalizer
 	}
 	return CCLItemFinalizer, DeprecatedCCLItemFinalizer
+}
+
+// addOwnerReferenceIfNotPresent adds a non-controller owner reference from owner to owned.
+// This is used instead of SetControllerReference to allow multiple ContentLibraryItems
+// (from different vCenters) to share a single VirtualMachineImage.
+//
+// Unlike SetControllerReference:
+//   - Sets controller=false (allows multiple owners)
+//   - Checks if owner reference already exists before adding
+//   - Preserves existing owner references
+func addOwnerReferenceIfNotPresent(owner, owned client.Object, scheme *runtime.Scheme) error {
+	ownerGVK, err := apiutil.GVKForObject(owner, scheme)
+	if err != nil {
+		return fmt.Errorf("failed to get GVK for owner: %w", err)
+	}
+
+	ownerRefs := owned.GetOwnerReferences()
+	
+	// Check if this owner is already present
+	for _, ref := range ownerRefs {
+		if ref.UID == owner.GetUID() {
+			return nil
+		}
+	}
+
+	// Add new owner reference
+	newRef := metav1.OwnerReference{
+		APIVersion:         ownerGVK.GroupVersion().String(),
+		Kind:               ownerGVK.Kind,
+		Name:               owner.GetName(),
+		UID:                owner.GetUID(),
+		Controller:         ptr.To(false),
+		BlockOwnerDeletion: ptr.To(true),
+	}
+
+	owned.SetOwnerReferences(append(ownerRefs, newRef))
+	return nil
 }

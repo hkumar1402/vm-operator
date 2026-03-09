@@ -37,6 +37,7 @@ func ReconcileNetworkInterfaces(
 			results.Results[idx].DeviceKey = matchDev.Key
 			results.Results[idx].MacAddress = matchDev.MacAddress
 			r.Device.(vimtypes.BaseVirtualEthernetCard).GetVirtualEthernetCard().MacAddress = matchDev.MacAddress
+
 			currentEthCards = slices.Delete(currentEthCards, matchingIdx, matchingIdx+1)
 		} else {
 			existingIdx := findExistingEthCardForOrphanedCR(ctx, r.Name, results.OrphanedNetworkInterfaces, currentEthCards)

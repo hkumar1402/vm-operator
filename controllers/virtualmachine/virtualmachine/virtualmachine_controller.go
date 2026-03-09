@@ -94,6 +94,8 @@ func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr manager.Manager) err
 		})
 
 	// Watch VirtualMachines.
+	// VM controller only runs in per-vCenter containers (ensured by controllers.go).
+	// Cache is configured to only watch VMs with matching vCenter label.
 	builder = builder.Watches(
 		controlledType,
 		&kubeutil.EnqueueRequestForObject{

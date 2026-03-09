@@ -152,7 +152,7 @@ func CreateAndWaitForNetworkInterfaces(
 
 		switch networkType {
 		case pkgcfg.NetworkProviderTypeVDS:
-			result, err = createNetOPNetworkInterface(vmCtx, client, vimClient, interfaceSpec)
+			result, err = createNetOPNetworkInterface(vmCtx, client, vimClient, clusterMoRef, interfaceSpec)
 		case pkgcfg.NetworkProviderTypeNSXT:
 			result, err = createNCPNetworkInterface(vmCtx, client, vimClient, clusterMoRef, interfaceSpec)
 		case pkgcfg.NetworkProviderTypeVPC:
@@ -166,6 +166,12 @@ func CreateAndWaitForNetworkInterfaces(
 		if err != nil {
 			return NetworkInterfaceResults{},
 				fmt.Errorf("network interface %q error: %w", interfaceSpec.Name, err)
+		}
+
+		if result == nil {
+			// Provider deferred NIC configuration (e.g. clusterMoRef not yet
+			// known). Skip this interface; it will be added on the next reconcile.
+			continue
 		}
 
 		applyInterfaceSpecToResult(
@@ -361,7 +367,14 @@ func createNetOPNetworkInterface(
 	vmCtx pkgctx.VirtualMachineContext,
 	client ctrlclient.Client,
 	vimClient *vim25.Client,
+	clusterMoRef *vimtypes.ManagedObjectReference,
 	interfaceSpec *vmopv1.VirtualMachineNetworkInterfaceSpec) (*NetworkInterfaceResult, error) {
+
+	// Netop will need placement information (clusterMoRef) to determine which backing
+	// portgroup to use for allocating IP config on.
+	if clusterMoRef == nil {
+		return nil, nil
+	}
 
 	var (
 		networkRefName string

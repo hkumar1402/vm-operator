@@ -28,7 +28,8 @@ const (
 	webHookName = "default"
 )
 
-// +kubebuilder:webhook:verbs=create;update,path=/default-mutate-vmoperator-vmware-com-v1alpha5-virtualmachinesnapshot,mutating=true,failurePolicy=fail,groups=vmoperator.vmware.com,resources=virtualmachinesnapshots,versions=v1alpha5,name=default.mutating.virtualmachinesnapshot.v1alpha5.vmoperator.vmware.com,sideEffects=None,admissionReviewVersions=v1;v1beta1
+// +kubebuilder:webhook:verbs=create,path=/default-mutate-vmoperator-vmware-com-v1alpha5-virtualmachinepublishrequest,mutating=true,failurePolicy=fail,groups=vmoperator.vmware.com,resources=virtualmachinepublishrequests,versions=v1alpha5,name=default.mutating.virtualmachinepublishrequest.v1alpha5.vmoperator.vmware.com,sideEffects=None,admissionReviewVersions=v1;v1beta1
+// +kubebuilder:rbac:groups=vmoperator.vmware.com,resources=virtualmachines,verbs=get;list
 
 // AddToManager adds the webhook to the provided manager.
 func AddToManager(ctx *pkgctx.ControllerManagerContext, mgr ctrlmgr.Manager) error {
@@ -59,26 +60,15 @@ func (m mutator) Mutate(ctx *pkgctx.WebhookRequestContext) admission.Response {
 		return admission.Allowed("")
 	}
 
-	modified, err := m.vmSnapshotFromUnstructured(ctx.Obj)
+	modified, err := m.publishRequestFromUnstructured(ctx.Obj)
 	if err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
-	var wasMutated bool
-
-	// Always set the VM name label on create
-	if SetVMNameLabel(modified) {
-		wasMutated = true
-	}
-
-	// Copy vCenter ID label from parent VM for multi-vCenter filtering
-	if copied, err := m.copyVCenterLabelFromVM(ctx, modified); err != nil {
+	// Copy vCenter ID label from source VM
+	if copied, err := m.copyVCenterLabelFromSourceVM(ctx, modified); err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
-	} else if copied {
-		wasMutated = true
-	}
-
-	if !wasMutated {
+	} else if !copied {
 		return admission.Allowed("")
 	}
 
@@ -91,45 +81,31 @@ func (m mutator) Mutate(ctx *pkgctx.WebhookRequestContext) admission.Response {
 }
 
 func (m mutator) For() schema.GroupVersionKind {
-	return vmopv1.GroupVersion.WithKind(reflect.TypeOf(vmopv1.VirtualMachineSnapshot{}).Name())
+	return vmopv1.GroupVersion.WithKind(reflect.TypeOf(vmopv1.VirtualMachinePublishRequest{}).Name())
 }
 
-// vmSnapshotFromUnstructured returns the VirtualMachineSnapshot from the unstructured object.
-func (m mutator) vmSnapshotFromUnstructured(obj runtime.Unstructured) (*vmopv1.VirtualMachineSnapshot, error) {
-	vmSnapshot := &vmopv1.VirtualMachineSnapshot{}
-	if err := m.converter.FromUnstructured(obj.UnstructuredContent(), vmSnapshot); err != nil {
+// publishRequestFromUnstructured returns the VirtualMachinePublishRequest from the unstructured object.
+func (m mutator) publishRequestFromUnstructured(obj runtime.Unstructured) (*vmopv1.VirtualMachinePublishRequest, error) {
+	publishRequest := &vmopv1.VirtualMachinePublishRequest{}
+	if err := m.converter.FromUnstructured(obj.UnstructuredContent(), publishRequest); err != nil {
 		return nil, err
 	}
-	return vmSnapshot, nil
+	return publishRequest, nil
 }
 
-// SetVMNameLabel sets the VM name label on the snapshot if it has a vmRef.
-// Returns true if the snapshot was mutated, false otherwise.
-func SetVMNameLabel(vmSnapshot *vmopv1.VirtualMachineSnapshot) bool {
-	// Only set the label if there's a vmName.
-	if vmSnapshot.Spec.VMName == "" {
-		return false
-	}
-
-	// Add the label if it does not exist.
-	if _, exists := vmSnapshot.Labels[vmopv1.VMNameForSnapshotLabel]; !exists {
-		vmName := vmSnapshot.Spec.VMName
-		metav1.SetMetaDataLabel(&vmSnapshot.ObjectMeta, vmopv1.VMNameForSnapshotLabel, vmName)
-
-		return true
-	}
-
-	return false
-}
-
-// copyVCenterLabelFromVM copies the vCenter ID label from the parent VM to the snapshot.
-// This ensures per-vCenter containers only process snapshots for their VMs.
-func (m mutator) copyVCenterLabelFromVM(
+// copyVCenterLabelFromSourceVM copies the vCenter ID label from the source VM to the publish request.
+// This ensures per-vCenter containers only process publish requests for their VMs.
+func (m mutator) copyVCenterLabelFromSourceVM(
 	ctx *pkgctx.WebhookRequestContext,
-	vmSnapshot *vmopv1.VirtualMachineSnapshot) (bool, error) {
+	publishRequest *vmopv1.VirtualMachinePublishRequest) (bool, error) {
 
-	return webhookcommon.CopyVCenterLabelFromVM(ctx, m.client, vmSnapshot,
+	return webhookcommon.CopyVCenterLabelFromVM(ctx, m.client, publishRequest,
 		func(o metav1.Object) string {
-			return o.(*vmopv1.VirtualMachineSnapshot).Spec.VMName
+			pr := o.(*vmopv1.VirtualMachinePublishRequest)
+			if pr.Spec.Source.Name != "" {
+				return pr.Spec.Source.Name
+			}
+			// If source name is omitted, controller uses the publish request's name.
+			return pr.Name
 		})
 }

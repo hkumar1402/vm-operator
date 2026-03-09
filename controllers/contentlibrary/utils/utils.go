@@ -35,6 +35,45 @@ func GetImageFieldNameFromItem(itemName string) (string, error) {
 	return fmt.Sprintf("%s-%s", ImageFieldNamePrefix, uuid), nil
 }
 
+// GetImageFieldNameFromItemWithSourceID returns the Image field name in format of "vmi-<uuid>".
+// In multi-vCenter deployments with subscribed content libraries, it uses the SourceID
+// (if available) to ensure multiple ContentLibraryItems from different vCenters that
+// reference the same publisher content will create/share a single VirtualMachineImage.
+// Falls back to local item name if SourceID is not available.
+func GetImageFieldNameFromItemWithSourceID(itemName, sourceID string) (string, error) {
+	// If SourceID is available (subscribed library), use it for VMI naming
+	// This ensures ContentLibraryItems from different vCenters pointing to the
+	// same publisher content will share a single VMI
+	if sourceID != "" {
+		return fmt.Sprintf("%s-%s", ImageFieldNamePrefix, sourceID), nil
+	}
+
+	// Fall back to local item name for non-subscribed libraries
+	return GetImageFieldNameFromItem(itemName)
+}
+
+// HasItemReadyCondition returns true if the given item conditions contain a Ready condition,
+// regardless of its status. This indicates the item status has been fully populated.
+func HasItemReadyCondition(itemConditions imgregv1a1.Conditions) bool {
+	for _, condition := range itemConditions {
+		if condition.Type == imgregv1a1.ReadyCondition {
+			return true
+		}
+	}
+	return false
+}
+
+// HasV1A2ItemReadyCondition returns true if the given item conditions contain a Ready condition,
+// regardless of its status. This indicates the item status has been fully populated.
+func HasV1A2ItemReadyCondition(itemConditions []metav1.Condition) bool {
+	for _, condition := range itemConditions {
+		if condition.Type == imgregv1.ReadyCondition {
+			return true
+		}
+	}
+	return false
+}
+
 // IsItemReady returns if the given item conditions contain a Ready condition with status True.
 func IsItemReady(itemConditions imgregv1a1.Conditions) bool {
 	var isReady bool

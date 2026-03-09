@@ -12,9 +12,13 @@ import (
 
 	imgregv1a1 "github.com/vmware-tanzu/image-registry-operator-api/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha5"
+	"github.com/vmware-tanzu/vm-operator/pkg/constants"
 )
 
 const (
@@ -53,6 +57,48 @@ func RetrieveDefaultImagePublishContentLibrary(ctx context.Context, c ctrlclient
 	}
 
 	return &clList.Items[0], nil
+}
+
+// CopyVCenterLabelFromVM copies the vmoperator.vmware.com/vcenter-id label from the VM named
+// by getVMName(obj) onto obj. Returns true if the label was copied. Returns false without error
+// if obj already carries the label, if getVMName returns "", or if the VM is not found.
+func CopyVCenterLabelFromVM(
+	ctx context.Context,
+	client ctrlclient.Client,
+	obj metav1.Object,
+	getVMName func(metav1.Object) string,
+) (bool, error) {
+
+	if obj.GetLabels()[constants.VCenterIDLabel] != "" {
+		return false, nil
+	}
+
+	vmName := getVMName(obj)
+	if vmName == "" {
+		return false, nil
+	}
+
+	vm := &vmopv1.VirtualMachine{}
+	if err := client.Get(ctx, ctrlclient.ObjectKey{Name: vmName, Namespace: obj.GetNamespace()}, vm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to get VM %s/%s: %w", obj.GetNamespace(), vmName, err)
+	}
+
+	vcenterID := vm.Labels[constants.VCenterIDLabel]
+	if vcenterID == "" {
+		return false, nil
+	}
+
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[constants.VCenterIDLabel] = vcenterID
+	obj.SetLabels(labels)
+
+	return true, nil
 }
 
 // ConvertFieldErrorsToStrings returns a list of error messages from the field.ErrorList's non nil errors.

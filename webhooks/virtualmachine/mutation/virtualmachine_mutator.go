@@ -32,6 +32,7 @@ import (
 	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha5"
 	"github.com/vmware-tanzu/vm-operator/api/v1alpha5/common"
 	ncpv1alpha1 "github.com/vmware-tanzu/vm-operator/external/ncp/api/v1alpha1"
+	topologyv1 "github.com/vmware-tanzu/vm-operator/external/tanzu-topology/api/v1alpha1"
 	"github.com/vmware-tanzu/vm-operator/pkg/builder"
 	pkgcfg "github.com/vmware-tanzu/vm-operator/pkg/config"
 	"github.com/vmware-tanzu/vm-operator/pkg/constants"
@@ -115,6 +116,10 @@ var (
 )
 
 func init() {
+	MutateOnCreateFuncs.Store(
+		"create.vmoperator.vmware.com/assign-vcenter",
+		(MutateOnCreateFn)(AssignVCenter))
+
 	MutateOnCreateFuncs.Store(
 		"create.vmoperator.vmware.com/set-created-at-annotations",
 		(MutateOnCreateFn)(SetCreatedAtAnnotations))
@@ -790,6 +795,78 @@ func SetDefaultControllers(
 	}
 
 	return false, nil
+}
+
+// AssignVCenter assigns a vCenter instance UUID to a VM in multi-vCenter deployments.
+func AssignVCenter(
+	ctx *pkgctx.WebhookRequestContext,
+	client ctrlclient.Client,
+	vm *vmopv1.VirtualMachine) (bool, error) {
+
+	if vm.Labels != nil && vm.Labels[constants.VCenterIDLabel] != "" {
+		return false, nil
+	}
+
+	// TODO: For Immediate-mode PVCs, derive the required vCenter from the
+	// zone recorded in the PVC's accessible-topology annotation so that the
+	// VM is always routed to the vCenter that owns the bound PV.
+
+	vcenters, err := getAvailableVCenters(ctx, client)
+	if err != nil {
+		return false, fmt.Errorf("failed to get available vCenters: %w", err)
+	}
+	if len(vcenters) == 0 {
+		return false, errors.New("no vCenters found: no Zone or AvailabilityZone CRs carry a vcenter-id label")
+	}
+
+	selectedIdx := int(uuid.New().ID()) % len(vcenters)
+	if vm.Labels == nil {
+		vm.Labels = make(map[string]string)
+	}
+	vm.Labels[constants.VCenterIDLabel] = vcenters[selectedIdx]
+
+	return true, nil
+}
+
+// getAvailableVCenters returns the distinct set of vCenter instance UUIDs
+// registered with this Supervisor by collecting the vcenter-id label value
+// from every Zone and AvailabilityZone CR visible to the global container.
+// This is self-consistent: as vCenters are added or removed the Zone/AZ CRs
+// (and their labels) are updated by the bootstrap process, keeping this list
+// automatically up-to-date without any separate ConfigMap.
+func getAvailableVCenters(
+	ctx *pkgctx.WebhookRequestContext,
+	c ctrlclient.Client) ([]string, error) {
+
+	seen := map[string]struct{}{}
+
+	// Collect from WorkloadDomainIsolation Zone CRs (cluster-wide list, no namespace filter).
+	zoneList := &topologyv1.ZoneList{}
+	if err := c.List(ctx, zoneList); err != nil {
+		return nil, fmt.Errorf("failed to list Zone CRs: %w", err)
+	}
+	for _, z := range zoneList.Items {
+		if vcID := z.Labels[constants.VCenterIDLabel]; vcID != "" {
+			seen[vcID] = struct{}{}
+		}
+	}
+
+	// Collect from legacy AvailabilityZone CRs.
+	azList := &topologyv1.AvailabilityZoneList{}
+	if err := c.List(ctx, azList); err != nil {
+		return nil, fmt.Errorf("failed to list AvailabilityZone CRs: %w", err)
+	}
+	for _, az := range azList.Items {
+		if vcID := az.Labels[constants.VCenterIDLabel]; vcID != "" {
+			seen[vcID] = struct{}{}
+		}
+	}
+
+	result := make([]string, 0, len(seen))
+	for vcID := range seen {
+		result = append(result, vcID)
+	}
+	return result, nil
 }
 
 // SetLastResizeAnnotations sets the last resize annotation as needed when the class name changes.
